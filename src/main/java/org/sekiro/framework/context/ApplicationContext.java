@@ -3,6 +3,7 @@ package org.sekiro.framework.context;
 import org.sekiro.framework.annotation.Autowired;
 import org.sekiro.framework.annotation.Controller;
 import org.sekiro.framework.annotation.Service;
+import org.sekiro.framework.aop.AopConfig;
 import org.sekiro.framework.beans.BeanDefinition;
 import org.sekiro.framework.beans.BeanPostProcessor;
 import org.sekiro.framework.beans.BeanWrapper;
@@ -10,9 +11,13 @@ import org.sekiro.framework.context.support.BeanDefinitonReader;
 import org.sekiro.framework.core.BeanFactory;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * author      : quzhiyu
@@ -21,18 +26,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * description :
  */
 
-public class ApplicationContext implements BeanFactory {
+public class ApplicationContext extends DefaultListableBeanFactory implements BeanFactory {
 
     private String [] configLocations;
 
     private BeanDefinitonReader reader;
 
-    private Map<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>();
-
     //用来保证注册式单例
     private Map<String,Object> beanCacheMap = new ConcurrentHashMap<>();
     //存储所有被代理过的对象
     private Map<String,BeanWrapper> beanWrapperMap = new ConcurrentHashMap<>();
+
     public void refresh(){
 
         //定位
@@ -56,7 +60,8 @@ public class ApplicationContext implements BeanFactory {
         for (Map.Entry<String, BeanDefinition> beanDefinitionEntry : this.beanDefinitionMap.entrySet()) {
             String beanName = beanDefinitionEntry.getKey();
             if(!beanDefinitionEntry.getValue().isLazyInit()) {
-                getBean(beanName);
+                Object bean = getBean(beanName);
+                System.out.println(bean);
             }
         }
 
@@ -178,6 +183,10 @@ public class ApplicationContext implements BeanFactory {
             if(null == instance)
                 return null;
             BeanWrapper beanWrapper = new BeanWrapper(instance);
+
+            beanWrapper.setAopConfig(instantionAopConfig(beanDefinition));
+
+
             beanWrapper.setPostProcessor(beanPostProcessor);
             this.beanWrapperMap.put(beanName,beanWrapper);
             //实例初始化以后通知一次
@@ -220,4 +229,44 @@ public class ApplicationContext implements BeanFactory {
 
     }
 
+
+    public String[] getBeanDefinitionNames() {
+        return this.beanDefinitionMap.keySet().toArray(new String[beanDefinitionMap.size()]);
+    }
+
+    public int getBeanDefinitionCount() {
+        return beanDefinitionMap.size();
+    }
+
+    public Properties getConfig() {
+        return this.reader.getConfig();
+    }
+
+
+    private AopConfig instantionAopConfig(BeanDefinition beanDefinition) throws Exception {
+        AopConfig config = new AopConfig();
+        String expression = reader.getConfig().getProperty("pointCut");
+        String[] before = reader.getConfig().getProperty("aspectBefore").split("\\s");
+        String[] after = reader.getConfig().getProperty("aspectAfter").split("\\s");
+
+        String className = beanDefinition.getBeanClassName();
+        Class<?> clazz = Class.forName(className);
+
+        Pattern pattern = Pattern.compile(expression);
+
+        Class<?> aspectClass = Class.forName(before[0]);
+
+        for (Method method : clazz.getMethods()) {
+            Matcher matcher = pattern.matcher(method.toString());
+            if(matcher.matches()) {
+
+                //能满足切面规则的类添加到Aop配置中
+                config.put(method,aspectClass.newInstance(),new Method[] {
+                        aspectClass.getMethod(before[1]) ,
+                        aspectClass.getMethod(after[1])});
+            }
+        }
+
+        return config;
+    }
 }

@@ -18,14 +18,11 @@ public class PageAction {
 	@Autowired
 	IQueryService queryService;
 	
-	@RequestMapping("/first.html")
-	public ModelAndView query(@RequestParam("teacher") String teacher){
-		String result = queryService.query(teacher);
-		Map<String,Object> model = new HashMap<String,Object>();
-		model.put("teacher", teacher);
-		model.put("data", result);
-		model.put("token", "123456");
-		return new ModelAndView("first.html",model);
+	@RequestMapping("/index.html")
+	public ModelAndView query(@RequestParam("name") String name){
+		Map<String,Object> model = new HashMap<>();
+		model.put("name", name);
+		return new ModelAndView("index.html",model);
 	}
 	
 }

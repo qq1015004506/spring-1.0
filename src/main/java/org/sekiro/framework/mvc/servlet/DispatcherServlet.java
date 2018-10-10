@@ -1,22 +1,29 @@
 package org.sekiro.framework.mvc.servlet;
 
+import com.sun.deploy.net.HttpRequest;
+import org.sekiro.framework.annotation.Controller;
+import org.sekiro.framework.annotation.RequestMapping;
+import org.sekiro.framework.annotation.RequestParam;
+import org.sekiro.framework.aop.AopProxyUtils;
 import org.sekiro.framework.context.ApplicationContext;
 import org.sekiro.framework.mvc.HandlerAdapter;
 import org.sekiro.framework.mvc.HandlerMapping;
 import org.sekiro.framework.mvc.ModelAndView;
+import org.sekiro.framework.mvc.ViewResolver;
 
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import java.io.File;
 import java.io.IOException;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * author      : quzhiyu
@@ -43,40 +50,65 @@ public class DispatcherServlet extends HttpServlet {
     /*
      *
      */
-    private List<HandlerAdapter> handlerAdapters = new ArrayList<>();
+    private Map<HandlerMapping,HandlerAdapter> handlerAdapters = new HashMap<>();
+
+    private List<ViewResolver> viewResolvers = new ArrayList<>();
 
     @Override
     public void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-//        String url = req.getRequestURI();
-//        String contextPath = req.getContextPath();
-//        url = url.replace(contextPath,"").replace("/+","/");
-//        HandlerMapping handler = this.handlerMapping.get(url);
-//        try {
-//            ModelAndView mv = (ModelAndView)handler.getMethod().invoke(handler.getController());
-//        } catch (IllegalAccessException e) {
-//            e.printStackTrace();
-//        } catch (InvocationTargetException e) {
-//            e.printStackTrace();
-//        }
-//        doDispatch(req, resp);
+        try {
+            doDispatch(req, resp);
+        }catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
-    private void doDispatch(HttpServletRequest req, HttpServletResponse resp) {
+    private void doDispatch(HttpServletRequest req, HttpServletResponse resp) throws Exception {
+        //根据用户请求的url获取一个handler
         HandlerMapping handler = getHandler(req);
+        if(handler == null) {
+            resp.getWriter().write("404 not found");
+            return;
+        }
         HandlerAdapter ha = getHandlerAdapter(handler);
         ModelAndView mv = ha.handle(req,resp,handler);
         processDispatchResult(resp,mv);
     }
 
-    private void processDispatchResult(HttpServletResponse resp, ModelAndView mv) {
+    private void processDispatchResult(HttpServletResponse resp, ModelAndView mv) throws Exception {
+        //调用viewResolver的resolveView方法
+        if(null == mv) return;
+        if(this.viewResolvers.isEmpty()) return;
+        for (ViewResolver viewResolver : viewResolvers) {
+            if(!mv.getViewName().equals(viewResolver.getViewName())) continue;
+            String out = viewResolver.viewResolver(mv);
+            if(out != null) {
+                resp.getWriter().write(out);
+                break;
+            }
+        }
 
     }
 
     private HandlerAdapter getHandlerAdapter(HandlerMapping handler) {
-        return null;
+        if(this.handlerAdapters.isEmpty())
+            return null;
+        return handlerAdapters.get(handler);
     }
 
     private HandlerMapping getHandler(HttpServletRequest req) {
+        if(this.handlerMappings.isEmpty()) return null;
+        String url = req.getRequestURI();
+        String contextPath = req.getContextPath();
+        url = url.replace(contextPath,"").replaceAll("/+","/");
+
+        for (HandlerMapping handlerMapping : handlerMappings) {
+            Matcher matcher = handlerMapping.getPattern().matcher(url);
+            if(!matcher.matches())
+                continue;
+            return handlerMapping;
+
+        }
         return null;
     }
 
@@ -118,14 +150,86 @@ public class DispatcherServlet extends HttpServlet {
 
     //将Controller中配置的RequestMapping和Method进行一一对应
     private void initHandlerMappings(ApplicationContext context) {
+        String[] beanNames = context.getBeanDefinitionNames();
+        try {
+
+
+            //首先从容器中取到所有实例
+            for (String beanName : beanNames) {
+                Object proxy = context.getBean(beanName);
+                Object instance = AopProxyUtils.getTargetObject(proxy);
+                Class<?> clazz = instance.getClass();
+                //如果不是Controller就继续循环
+                if (!clazz.isAnnotationPresent(Controller.class))
+                    continue;
+                String baseUrl = "";
+                if (clazz.isAnnotationPresent(RequestMapping.class)) {
+                    RequestMapping requestMapping = clazz.getAnnotation(RequestMapping.class);
+                    baseUrl = requestMapping.value();
+                }
+                //扫描所有的public方法
+                Method[] methods = clazz.getMethods();
+                for (Method method : methods) {
+                    if (!method.isAnnotationPresent(RequestMapping.class))
+                        continue;
+                    RequestMapping requestMapping = method.getAnnotation(RequestMapping.class);
+                    String regex = ("/" + baseUrl + requestMapping.value().replaceAll("\\*", ".*")).replaceAll("/+", "/");
+                    Pattern pattern = Pattern.compile(regex);
+                    this.handlerMappings.add(new HandlerMapping(instance, method, pattern));
+                    System.out.println("mapping :" + regex + " , " + method);
+                }
+            }
+        }catch (Exception e) {
+            e.printStackTrace();
+        }
 
     }
+    //HandlerAdapter的作用是动态配置参数匹配Method
+    //因此初始化要做的就是将这些Method参数的名字或者类型按照一定的顺序保存
+    //可以通过记录这些参数的位置index，挨个从数组中填值，这样就和参数的顺序无关了
     private void initHandlerAdapters(ApplicationContext context) {
+        for (HandlerMapping handlerMapping : handlerMappings) {
+            //每一个方法有一个参数列表
+            Map<String,Integer> paramMapping = new HashMap<>();
+            //Method的每一个参数都有可能加多个注解，因此是二维数组
+            Annotation[][] parameterAnnotations = handlerMapping.getMethod().getParameterAnnotations();
 
+            //对加了RequestParam的参数进行处理
+            for (int i = 0; i < parameterAnnotations.length; i++) {
+                for (Annotation annotation : parameterAnnotations[i]) {
+                    if(annotation instanceof RequestParam) {
+                        String paramName = ((RequestParam) annotation).value().trim();
+                        //如果注解RequestParam的值不为空
+                        if(!"".equals(paramName)) {
+                            paramMapping.put(paramName,i);
+                        }
+                    }
+                }
+            }
+            //处理没有加RequestParam的参数
+            //比如HttpServletRequest或Response
+            Class<?>[] parameterTypes = handlerMapping.getMethod().getParameterTypes();
+            for (int i = 0; i < parameterTypes.length; i++) {
+                Class<?> parameterType = parameterTypes[i];
+                if(parameterType == HttpServletRequest.class ||
+                   parameterType == HttpServletResponse.class){
+                    paramMapping.put(parameterType.getName(),i);
+                }
+            }
+
+            handlerAdapters.put(handlerMapping,new HandlerAdapter(paramMapping));
+        }
     }
 
 
     private void initViewResolvers(ApplicationContext context) {
+        //解决页面名字和模板关联的问题
+        String templateRoot = context.getConfig().getProperty("templateRoot");
+        String templateRootPath = this.getClass().getClassLoader().getResource(templateRoot).getFile();
+        File templateRootDir = new File(templateRootPath);
+        for (File template : templateRootDir.listFiles()) {
+            this.viewResolvers.add(new ViewResolver(template.getName(),template));
+        }
 
     }
 

@@ -1,5 +1,8 @@
 package org.sekiro.framework.beans;
 
+import org.sekiro.framework.aop.AopConfig;
+import org.sekiro.framework.aop.AopProxy;
+
 /**
  * author      : quzhiyu
  * date        : 2018/10/5 11:00
@@ -8,6 +11,10 @@ package org.sekiro.framework.beans;
  */
 
 public class BeanWrapper {
+
+
+    private AopProxy aopProxy = new AopProxy();
+
     //观察者模式
     //1，支持事件响应
     private BeanPostProcessor postProcessor;
@@ -25,7 +32,8 @@ public class BeanWrapper {
     private Object originalInstance;
 
     public BeanWrapper(Object instance) {
-        this.wrapperInstance = instance;
+        //
+        this.wrapperInstance = aopProxy.getProxy(instance);
         this.originalInstance = instance;
     }
     public Object getWrapperInstance(){
@@ -37,4 +45,11 @@ public class BeanWrapper {
         return this.wrapperInstance.getClass();
     }
 
+    public void setAopConfig(AopConfig aopConfig){
+        aopProxy.setConfig(aopConfig);
+    }
+
+    public Object getOriginalInstance() {
+        return originalInstance;
+    }
 }
